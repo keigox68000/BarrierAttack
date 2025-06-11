@@ -36,7 +36,7 @@
     <div id="game-container">
         <canvas id="gameCanvas" width="640" height="480"></canvas>
         <div id="instructions">
-            矢印キー: 移動 | スペースキー: 発射
+            矢印キー: 移動 | CTRL: 発射
         </div>
     </div>
 
@@ -46,19 +46,25 @@
         const ctx = canvas.getContext('2d');
 
         // ゲームの状態管理
-        let gameState = 'titleDemo'; // titleDemo, autoPlayDemo, start, playing, ending, gameOver
+        let gameState = 'titleDemo';
         let gameOverReason = '';
         let score = 0;
         let lives = 3;
-        let gameOverTimer = 0;
+        let stateTimer = 0;
+        let lastTime = 0;
+
+        const keys = {
+            right: false,
+            left: false,
+            fire: false
+        };
 
         // --- デモ画面用の設定 ---
         const demoState = {
             phase: 0,
-            timer: 120,
+            timer: 2,
             walker: { x: -20, y: 350, width: 12, height: 24 },
             titleRevealX: 0,
-            autoPlayTimer: 0,
             playerAIDirection: 1,
             playerAIShootTimer: 0
         };
@@ -66,8 +72,8 @@
         const titleLine2 = "ATTACK";
         const titleColors = ['#0000FF', '#FF0000', '#00FF00', '#00FFFF', '#FF00FF', '#FFFF00', '#FFFFFF'];
 
-        // --- エンティティの定義 ---
-        const player = { x: canvas.width / 2 - 12, y: canvas.height - 50, width: 24, height: 16, speed: 5, dx: 0, isAlive: true, respawnTimer: 0, invincibilityTimer: 0 };
+        // --- エンティティの定義 (速度を全体的に向上) ---
+        const player = { x: canvas.width / 2 - 12, y: canvas.height - 50, width: 24, height: 16, speed: 360, dx: 0, isAlive: true, respawnTimer: 0, invincibilityTimer: 0 };
         const station = { x: 10, y: 30, width: 48, height: 24, isAlive: true };
         let largeMissile = {};
         let largeMissileRespawnTimer = 0;
@@ -77,7 +83,7 @@
         const MINOR_ALIEN_COUNT = 16;
         let minorAlienRespawnTimer = 0;
         const bullets = [];
-        const bulletSpeed = 8;
+        const bulletSpeed = 500;
         let canShoot = true;
         const particles = [];
         const barrier = { y: 100, amplitude: 15, frequency: 0.12, thickness: 4, isDisabled: false, disabledTimer: 0 };
@@ -228,25 +234,18 @@
         }
 
         function drawGameOverScreen() {
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.fillStyle = '#FF3333';
             ctx.textAlign = 'center';
-            ctx.font = '48px "Courier New", Courier, monospace';
-            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 40);
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font = '20px "Courier New", Courier, monospace';
-            ctx.fillText(gameOverReason, canvas.width / 2, canvas.height / 2 + 10);
-            ctx.fillText(`FINAL SCORE: ${score}`, canvas.width / 2, canvas.height / 2 + 50);
-            ctx.fillText('Press "R" to Restart', canvas.width / 2, canvas.height / 2 + 90);
+            ctx.font = '72px "Courier New", Courier, monospace';
+            ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 + 18);
         }
         
         // --- ゲームロジック ---
 
         function initEntities(isForDemo = false) {
             station.isAlive = true;
-            largeMissile = { x: canvas.width - 50, y: station.y, width: 40, height: 16, speed: 0.2, health: 1, isAlive: true };
-            barrierAlien = { x: canvas.width / 2, y: 130, width: 20, height: 16, speed: 2, direction: 1, isAlive: true };
+            largeMissile = { x: canvas.width - 50, y: station.y, width: 40, height: 16, speed: 15, health: 1, isAlive: true };
+            barrierAlien = { x: canvas.width / 2, y: 130, width: 20, height: 16, speed: 150, direction: 1, isAlive: true };
             minorAliens = [];
             spawnMinorAliens();
             bullets.length = 0;
@@ -254,130 +253,146 @@
             player.x = canvas.width / 2 - player.width / 2;
             player.dx = 0;
             player.isAlive = true;
-            player.invincibilityTimer = isForDemo ? 9999 : 0;
+            player.invincibilityTimer = isForDemo ? 9999 : 3;
         }
 
         function spawnMinorAliens() {
-             minorAliens = [];
-             for (let i = 0; i < MINOR_ALIEN_COUNT; i++) {
-                 minorAliens.push({ originalIndex: i, x: 10 + i * 38, y: minorAlienSpawnY, width: 16, height: 16, isFalling: false, fallSpeedY: 0, fallSpeedX: 0 });
-             }
+            const existingIndices = new Set(minorAliens.map(alien => alien.originalIndex));
+            for (let i = 0; i < MINOR_ALIEN_COUNT; i++) {
+                if (!existingIndices.has(i)) {
+                    minorAliens.push({
+                        originalIndex: i,
+                        x: 10 + i * 38,
+                        y: minorAlienSpawnY,
+                        width: 16, height: 16,
+                        isFalling: false,
+                        fallSpeedY: 0,
+                        fallSpeedX: 0
+                    });
+                }
+            }
         }
         
-        function update() {
+        function update(deltaTime) {
             switch(gameState) {
                 case 'titleDemo':
-                    updateTitleDemo();
+                    updateTitleDemo(deltaTime);
                     break;
                 case 'autoPlayDemo':
-                    updateAutoPlayDemo();
+                    updateAutoPlayDemo(deltaTime);
                     break;
                 case 'playing':
-                    updatePlaying();
+                    updatePlaying(deltaTime);
                     break;
-                case 'ending':
-                    updateEnding();
+                case 'gameOver':
+                    updateGameOver(deltaTime);
                     break;
             }
         }
         
-        function updateTitleDemo() {
-            const speed = 2;
+        function updateTitleDemo(deltaTime) {
+            const speed = 150;
             const charWidth1 = 32;
             const totalWidth = titleLine1.length * charWidth1;
             const titleX = (canvas.width - totalWidth) / 2;
 
             switch(demoState.phase) {
                 case 0:
-                    demoState.timer--;
+                    demoState.timer -= deltaTime;
                     if (demoState.timer <= 0) demoState.phase = 1;
                     break;
                 case 1:
-                    demoState.walker.x += speed;
+                    demoState.walker.x += speed * deltaTime;
                     if (demoState.walker.x > 30) demoState.phase = 2;
                     break;
                 case 2:
-                    demoState.walker.x += speed;
+                    demoState.walker.x += speed * deltaTime;
                     demoState.titleRevealX = demoState.walker.x;
                     if (demoState.walker.x >= titleX + 100) demoState.phase = 3;
                     break;
                 case 3:
-                    demoState.walker.x -= speed;
+                    demoState.walker.x -= speed * deltaTime;
                     demoState.titleRevealX = demoState.walker.x;
                     if (demoState.walker.x <= titleX - 60) demoState.phase = 4;
                     break;
                 case 4:
-                    demoState.walker.x += speed;
+                    demoState.walker.x += speed * deltaTime;
                     demoState.titleRevealX = demoState.walker.x;
                     if (demoState.walker.x >= titleX + totalWidth + 30) demoState.phase = 5;
                     break;
                 case 5:
-                    demoState.walker.x += speed;
+                    demoState.walker.x += speed * deltaTime;
                     if (demoState.walker.x > canvas.width + 20) {
                         demoState.phase = 6;
-                        demoState.timer = 180; // 3秒待機
+                        demoState.timer = 3;
                     }
                     break;
                 case 6:
-                    demoState.timer--;
-                    if(demoState.timer <= 0) {
-                        startAutoPlayDemo();
-                    }
+                    demoState.timer -= deltaTime;
+                    if(demoState.timer <= 0) startAutoPlayDemo();
                     break;
             }
         }
 
-        function updateAutoPlayDemo() {
-            demoState.autoPlayTimer--;
-            if(demoState.autoPlayTimer <= 0) {
+        function updateAutoPlayDemo(deltaTime) {
+            stateTimer -= deltaTime;
+            if(stateTimer <= 0) {
                 resetFullDemo();
                 return;
             }
             
             if (Math.random() < 0.01) demoState.playerAIDirection *= -1;
-            player.dx = demoState.playerAIDirection * player.speed * 0.5;
-            demoState.playerAIShootTimer--;
+            player.dx = demoState.playerAIDirection * player.speed;
+            demoState.playerAIShootTimer -= deltaTime;
             if(demoState.playerAIShootTimer <= 0) {
                 bullets.push({ x: player.x + player.width / 2 - 2, y: player.y, width: 3, height: 9 });
-                demoState.playerAIShootTimer = 30 + Math.random() * 60;
+                demoState.playerAIShootTimer = 0.5 + Math.random();
             }
 
-            updatePlayingLogic();
+            updatePlayingLogic(deltaTime);
         }
 
-        function updatePlaying() {
+        function updatePlaying(deltaTime) {
+            player.dx = 0;
+            if (keys.left) player.dx -= player.speed;
+            if (keys.right) player.dx += player.speed;
+            
+            if (keys.fire && canShoot) {
+                bullets.push({ x: player.x + player.width / 2 - 2, y: player.y, width: 3, height: 9 });
+                canShoot = false;
+            }
+
             if (!player.isAlive) {
-                player.respawnTimer -= 1/60;
+                player.respawnTimer -= deltaTime;
                 if (player.respawnTimer <= 0) {
                     if (lives > 0) {
                         player.isAlive = true;
                         player.x = canvas.width / 2 - player.width / 2;
                         player.invincibilityTimer = 3;
                     } else {
-                        gameOverReason = "自機がすべて破壊された！";
-                        startEnding(2);
+                        setGameOver("自機がすべて破壊された！");
                     }
                 }
             } else {
-                 if (player.invincibilityTimer > 0) player.invincibilityTimer -= 1/60;
+                 if (player.invincibilityTimer > 0) player.invincibilityTimer -= deltaTime;
             }
             
-            updatePlayingLogic();
+            updatePlayingLogic(deltaTime);
         }
         
-        function updatePlayingLogic() {
+        function updatePlayingLogic(deltaTime) {
             if (player.isAlive) {
-                player.x += player.dx;
+                player.x += player.dx * deltaTime;
                 if (player.x < 0) player.x = 0;
                 if (player.x + player.width > canvas.width) player.x = canvas.width - player.width;
             }
-            updateParticles();
+            updateParticles(deltaTime);
             bullets.forEach((bullet, index) => {
-                bullet.y -= bulletSpeed;
+                bullet.y -= bulletSpeed * deltaTime;
                 if (bullet.y < 0) bullets.splice(index, 1);
             });
             if (barrier.isDisabled) {
-                barrier.disabledTimer -= 1/60;
+                barrier.disabledTimer -= deltaTime;
                 if (barrier.disabledTimer <= 0) {
                     barrier.isDisabled = false;
                     if (!barrierAlien.isAlive) {
@@ -387,73 +402,73 @@
                     }
                 }
             }
-            updateEnemies();
+            updateEnemies(deltaTime);
             checkCollisions();
         }
 
-        function updateEnding() {
-            updateParticles();
-            gameOverTimer -= 1/60;
-            if (gameOverTimer <= 0) {
-                setGameOver(gameOverReason);
+        function updateGameOver(deltaTime) {
+            stateTimer -= deltaTime;
+            if (stateTimer <= 0) {
+                resetFullDemo();
+                return;
             }
+            
+            player.dx = 0;
+            
+            updateParticles(deltaTime);
+            updateEnemies(deltaTime);
+            checkCollisions();
         }
         
-        function updateParticles() {
+        function updateParticles(deltaTime) {
             for (let i = particles.length - 1; i >= 0; i--) {
                 const p = particles[i];
-                p.x += p.vx;
-                p.y += p.vy;
-                p.vy += 0.05;
-                p.life--;
-                if (p.life <= 0) {
-                    particles.splice(i, 1);
-                }
+                p.x += p.vx * deltaTime;
+                p.y += p.vy * deltaTime;
+                p.vy += 20 * deltaTime;
+                p.life -= deltaTime;
+                if (p.life <= 0) particles.splice(i, 1);
             }
         }
         
-        function updateEnemies() {
+        function updateEnemies(deltaTime) {
             if (largeMissile.isAlive) {
-                largeMissile.x -= largeMissile.speed;
+                largeMissile.x -= largeMissile.speed * deltaTime;
             } else {
-                largeMissileRespawnTimer -= 1/60;
+                largeMissileRespawnTimer -= deltaTime;
                 if (largeMissileRespawnTimer <= 0) {
                     largeMissile.isAlive = true;
                     largeMissile.x = canvas.width;
-                    largeMissile.speed += 0.05;
+                    largeMissile.speed += 4;
                 }
             }
             if(barrierAlien.isAlive) {
-                barrierAlien.x += barrierAlien.speed * barrierAlien.direction;
+                barrierAlien.x += barrierAlien.speed * barrierAlien.direction * deltaTime;
                 if (Math.random() < 0.02) {
-                    barrierAlien.speed = 1 + Math.random() * 3;
+                    barrierAlien.speed = 80 + Math.random() * 200;
                 }
                 if (Math.random() < 0.01) barrierAlien.direction *= -1;
-                if (barrierAlien.x < 0 || barrierAlien.x + barrierAlien.width > canvas.width) {
-                    barrierAlien.direction *= -1;
-                }
+                if (barrierAlien.x < 0 || barrierAlien.x + barrierAlien.width > canvas.width) barrierAlien.direction *= -1;
             }
-            minorAlienRespawnTimer -= 1/60;
+            minorAlienRespawnTimer -= deltaTime;
             if (minorAlienRespawnTimer <= 0) {
                 spawnMinorAliens();
                 minorAlienRespawnTimer = 10;
             }
-            if ((gameState === 'autoPlayDemo' || player.dx !== 0) && Math.random() < 0.03) {
+            if ((gameState === 'autoPlayDemo' || gameState === 'gameOver' || player.dx !== 0) && Math.random() < 0.03) {
                 const nonFallingAliens = minorAliens.filter(a => !a.isFalling);
                 if (nonFallingAliens.length > 0) {
                     const attacker = nonFallingAliens[Math.floor(Math.random() * nonFallingAliens.length)];
                     attacker.isFalling = true;
-                    attacker.fallSpeedY = 2 + Math.random() * 2;
-                    attacker.fallSpeedX = (Math.random() - 0.5) * 2;
+                    attacker.fallSpeedY = 150 + Math.random() * 150;
+                    attacker.fallSpeedX = (Math.random() - 0.5) * 150;
                 }
             }
             minorAliens.forEach((alien) => {
                 if (alien.isFalling) {
-                    alien.y += alien.fallSpeedY;
-                    alien.x += alien.fallSpeedX;
-                    if (alien.x < 0 || alien.x + alien.width > canvas.width) {
-                        alien.fallSpeedX *= -1;
-                    }
+                    alien.y += alien.fallSpeedY * deltaTime;
+                    alien.x += alien.fallSpeedX * deltaTime;
+                    if (alien.x < 0 || alien.x + alien.width > canvas.width) alien.fallSpeedX *= -1;
                     if (alien.y > canvas.height) {
                         alien.isFalling = false;
                         alien.y = minorAlienSpawnY;
@@ -464,40 +479,38 @@
         }
         
         function checkCollisions() {
-            const isAutoPlay = gameState === 'autoPlayDemo';
+            const isNonInteractive = gameState === 'autoPlayDemo' || gameState === 'gameOver';
             
             for (let i = bullets.length - 1; i >= 0; i--) {
                 const b = bullets[i];
                 if (station.isAlive && isColliding(b, station)) {
-                    if (isAutoPlay) {
-                        destroyStation(true);
-                    } else {
-                        gameOverReason = "味方のステーションを破壊してしまった！";
-                        destroyStation();
+                    if (!isNonInteractive) {
+                       setGameOver("味方のステーションを破壊してしまった！");
+                       return;
                     }
-                    return;
+                    destroyStation(isNonInteractive);
                 }
                 if (!barrier.isDisabled) {
                     const time = performance.now();
                     const dynamicAmplitude = barrier.amplitude + 4 * Math.sin(time / 250);
                     const barrierYAtBullet = barrier.y + Math.sin(b.x * barrier.frequency + time / 50) * dynamicAmplitude;
                     if (Math.abs(b.y - barrierYAtBullet) < barrier.thickness + 5) {
-                        createParticleBurst(b.x, barrierYAtBullet, { count: 10, color: '60, 100%, 75%', life: 30, speed: 2, size: 2 });
+                        createParticleBurst(b.x, barrierYAtBullet, { count: 10, color: '60, 100%, 75%', life: 0.5, speed: 120, size: 2 });
                         bullets.splice(i, 1);
                         continue;
                     }
                 }
                 if (largeMissile.isAlive && barrier.isDisabled && isColliding(b, largeMissile)) {
-                    createParticleBurst(largeMissile.x + largeMissile.width/2, largeMissile.y + largeMissile.height/2, { count: 50, color: '50, 100%, 75%', life: 60, speed: 4, size: 3 });
-                    if (!isAutoPlay) score += 500;
+                    createParticleBurst(largeMissile.x + largeMissile.width/2, largeMissile.y + largeMissile.height/2, { count: 50, color: '50, 100%, 75%', life: 1, speed: 240, size: 3 });
+                    if (!isNonInteractive) score += 500;
                     bullets.splice(i, 1);
                     largeMissile.isAlive = false;
                     largeMissileRespawnTimer = 3;
                     continue;
                 }
                 if (barrierAlien.isAlive && isColliding(b, barrierAlien)) {
-                    createParticleBurst(barrierAlien.x + barrierAlien.width/2, barrierAlien.y + barrierAlien.height/2, { count: 30, color: '120, 100%, 75%', life: 40, speed: 3, size: 2 });
-                    if (!isAutoPlay) score += 200;
+                    createParticleBurst(barrierAlien.x + barrierAlien.width/2, barrierAlien.y + barrierAlien.height/2, { count: 30, color: '120, 100%, 75%', life: 0.7, speed: 180, size: 2 });
+                    if (!isNonInteractive) score += 200;
                     barrier.isDisabled = true;
                     barrier.disabledTimer = 3;
                     barrierAlien.isAlive = false;
@@ -508,9 +521,9 @@
                 for (let j = minorAliens.length - 1; j >= 0; j--) {
                     const m = minorAliens[j];
                     if (isColliding(b, m)) {
-                        createParticleBurst(m.x + m.width/2, m.y + m.height/2, { count: 20, color: '300, 100%, 75%', life: 30, speed: 2.5, size: 2 });
+                        createParticleBurst(m.x + m.width/2, m.y + m.height/2, { count: 20, color: '300, 100%, 75%', life: 0.5, speed: 150, size: 2 });
                         minorAliens.splice(j, 1);
-                        if (!isAutoPlay) score += 50;
+                        if (!isNonInteractive) score += 50;
                         bullets.splice(i, 1);
                         bulletRemoved = true;
                         break;
@@ -519,33 +532,36 @@
                 if(bulletRemoved) continue;
             }
 
-            if (player.isAlive && (isAutoPlay || player.invincibilityTimer <= 0)) {
+            if (player.isAlive && player.invincibilityTimer <= 0) {
                 for (let i = minorAliens.length - 1; i >= 0; i--) {
                     if (isColliding(player, minorAliens[i])) {
-                        if (isAutoPlay) {
-                            createParticleBurst(player.x + player.width/2, player.y + player.height/2, { count: 80, color: '0, 100%, 75%', life: 80, speed: 5, size: 3 });
-                        } else {
+                        if (gameState === 'playing') {
                            playerHit();
+                           minorAliens.splice(i, 1);
+                           break;
+                        } 
+                        else if (gameState === 'autoPlayDemo') {
+                             createParticleBurst(player.x + player.width/2, player.y + player.height/2, { count: 80, color: '0, 100%, 75%', life: 1.3, speed: 300, size: 3 });
+                             player.x = canvas.width/2 - player.width/2;
+                             minorAliens.splice(i, 1);
+                             break;
                         }
-                        minorAliens.splice(i, 1);
-                        break;
                     }
                 }
             }
 
             if (largeMissile.isAlive && station.isAlive && isColliding(largeMissile, station)) {
-                if (isAutoPlay) {
+                 if (isNonInteractive) {
                     destroyStation(true);
                 } else {
-                    gameOverReason = "ステーションがミサイルで破壊された！";
-                    destroyStation();
+                    setGameOver("ステーションがミサイルで破壊された！");
                 }
                 return;
             }
         }
 
         function createParticleBurst(x, y, options) {
-            const { count = 10, color = '60, 100%, 75%', life = 30, speed = 4, size = 2 } = options;
+            const { count = 10, color = '60, 100%, 75%', life = 0.5, speed = 240, size = 2 } = options;
             for (let i = 0; i < count; i++) {
                 const angle = Math.random() * Math.PI * 2;
                 const velocity = Math.random() * speed;
@@ -560,46 +576,43 @@
         function destroyStation(isForDemo = false) {
             if (!station.isAlive) return;
             station.isAlive = false;
-            createParticleBurst(station.x + station.width / 2, station.y + station.height / 2, { count: 100, color: '240, 100%, 75%', life: 120, speed: 6, size: 4 });
+            createParticleBurst(station.x + station.width / 2, station.y + station.height / 2, { count: 100, color: '240, 100%, 75%', life: 2, speed: 360, size: 4 });
             if (isForDemo) {
-                station.isAlive = true;
-                largeMissile.x = canvas.width - 50;
+                setTimeout(() => {
+                    station.isAlive = true;
+                    largeMissile.x = canvas.width - 50;
+                }, 1000);
             } else {
-                startEnding(2);
+                setGameOver("ステーションが破壊された！");
             }
         }
         
         function playerHit() {
             if (!player.isAlive) return;
-            createParticleBurst(player.x + player.width/2, player.y + player.height/2, { count: 80, color: '0, 100%, 75%', life: 80, speed: 5, size: 3 });
+            createParticleBurst(player.x + player.width/2, player.y + player.height/2, { count: 80, color: '0, 100%, 75%', life: 1.3, speed: 300, size: 3 });
             lives--;
             player.isAlive = false;
             player.respawnTimer = 2;
         }
         
-        function startEnding(duration) {
-             if (gameState === 'ending' || gameState === 'gameOver') return;
-             gameState = 'ending';
-             gameOverTimer = duration;
-        }
-
         function setGameOver(reason) {
             if (gameState === 'gameOver') return;
-            gameState = 'gameOver';
             gameOverReason = reason;
+            gameState = 'gameOver';
+            stateTimer = 5;
         }
 
         function startAutoPlayDemo() {
             gameState = 'autoPlayDemo';
             initEntities(true);
-            demoState.autoPlayTimer = 15 * 60;
-            demoState.playerAIShootTimer = 60;
+            stateTimer = 15;
+            demoState.playerAIShootTimer = 1;
         }
         
         function resetFullDemo() {
             gameState = 'titleDemo';
             demoState.phase = 0;
-            demoState.timer = 120;
+            demoState.timer = 2;
             demoState.walker.x = -20;
             demoState.titleRevealX = 0;
         }
@@ -607,16 +620,16 @@
         function resetGame() {
             score = 0;
             lives = 3;
-            canShoot = true; // ★★★ 修正点: 発射可能状態をリセット
-            player.dx = 0; // ★★★ 修正点: 移動量をリセット
+            canShoot = true;
+            player.dx = 0;
             player.isAlive = true;
             player.respawnTimer = 0;
-            player.invincibilityTimer = 0;
+            player.invincibilityTimer = 3;
             barrier.isDisabled = false;
             barrier.disabledTimer = 0;
             minorAlienRespawnTimer = 10;
             largeMissileRespawnTimer = 0;
-            gameOverTimer = 0;
+            stateTimer = 0;
             initEntities();
             gameState = 'playing';
         }
@@ -629,75 +642,57 @@
                     drawDemoScreen();
                     break;
                 case 'autoPlayDemo':
-                    drawStation();
-                    drawLargeMissile();
-                    drawBarrierAlien();
-                    drawMinorAliens();
-                    drawPlayer();
-                    drawBullets();
-                    drawBarrier();
-                    drawParticles();
-                    drawUI();
-                    ctx.fillStyle = '#FFFFFF';
-                    ctx.textAlign = 'center';
-                    ctx.font = '24px "Courier New", Courier, monospace';
-                    ctx.fillText('PLAY PUSH "RETURN"', canvas.width / 2, 300);
-                    break;
                 case 'playing':
-                case 'ending': 
-                    drawStation();
-                    drawLargeMissile();
-                    drawBarrierAlien();
-                    drawMinorAliens();
-                    drawPlayer();
-                    drawBullets();
-                    drawBarrier();
-                    drawParticles();
-                    drawUI();
-                    break;
                 case 'gameOver':
                     drawStation();
                     drawLargeMissile();
                     drawBarrierAlien();
                     drawMinorAliens();
                     drawPlayer();
+                    drawBullets();
+                    drawBarrier();
                     drawParticles();
                     drawUI();
-                    drawGameOverScreen();
+                    if (gameState === 'autoPlayDemo') {
+                        ctx.fillStyle = '#FFFFFF';
+                        ctx.textAlign = 'center';
+                        ctx.font = '24px "Courier New", Courier, monospace';
+                        ctx.fillText('PLAY PUSH "RETURN"', canvas.width / 2, 300);
+                    }
+                    if (gameState === 'gameOver') {
+                        drawGameOverScreen();
+                    }
                     break;
             }
         }
         
-        function gameLoop() {
-            update();
+        function gameLoop(timestamp) {
+            if (!lastTime) lastTime = timestamp;
+            const deltaTime = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            update(deltaTime || 0);
             draw();
+            
             requestAnimationFrame(gameLoop);
         }
 
         function keyDown(e) {
-            // ★★★ 修正点: デモ中は直接ゲームを開始する
             if ((gameState === 'titleDemo' || gameState === 'autoPlayDemo') && (e.key === 'Enter' || e.key === 'Return')) {
                 resetGame();
                 return;
             }
-            if (gameState === 'gameOver' && e.key.toLowerCase() === 'r') {
-                resetFullDemo();
-                return;
-            }
-            if (gameState !== 'playing' || !player.isAlive) return;
+            if (gameState === 'gameOver') return;
 
-            if (e.key === 'ArrowRight' || e.key === 'Right') player.dx = player.speed;
-            else if (e.key === 'ArrowLeft' || e.key === 'Left') player.dx = -player.speed;
-            else if ((e.key === ' ' || e.key === 'Spacebar') && canShoot) {
-                bullets.push({ x: player.x + player.width / 2 - 2, y: player.y, width: 3, height: 9 });
-                canShoot = false;
-            }
+            if (e.key === 'ArrowRight' || e.key === 'Right') keys.right = true;
+            else if (e.key === 'ArrowLeft' || e.key === 'Left') keys.left = true;
+            else if (e.key === 'Control') keys.fire = true; // ★★★ 変更点
         }
         function keyUp(e) {
-            if (e.key === 'ArrowRight' || e.key === 'Right' || e.key === 'ArrowLeft' || e.key === 'Left') {
-                player.dx = 0;
-            }
-            if (e.key === ' ' || e.key === 'Spacebar') {
+            if (e.key === 'ArrowRight' || e.key === 'Right') keys.right = false;
+            else if (e.key === 'ArrowLeft' || e.key === 'Left') keys.left = false;
+            else if (e.key === 'Control') { // ★★★ 変更点
+                keys.fire = false;
                 canShoot = true;
             }
         }
@@ -705,7 +700,7 @@
         document.addEventListener('keydown', keyDown);
         document.addEventListener('keyup', keyUp);
 
-        gameLoop();
+        requestAnimationFrame(gameLoop);
     </script>
 </body>
 </html>
